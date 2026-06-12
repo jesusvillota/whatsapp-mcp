@@ -202,6 +202,17 @@ type SendMessageRequest struct {
 	MediaPath string `json:"media_path,omitempty"`
 }
 
+// LeaveGroupRequest represents the request body for the leave group API
+type LeaveGroupRequest struct {
+	GroupJID string `json:"group_jid"`
+}
+
+// LeaveGroupResponse represents the response for the leave group API
+type LeaveGroupResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
@@ -641,7 +652,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -774,6 +785,78 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for leaving a group
+	http.HandleFunc("/api/leave-group", func(w http.ResponseWriter, r *http.Request) {
+		// Only allow POST requests
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Parse the request body
+		var req LeaveGroupRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+
+		// Validate request
+		if req.GroupJID == "" {
+			http.Error(w, "Group JID is required", http.StatusBadRequest)
+			return
+		}
+
+		// Ensure it's a group JID
+		if !strings.Contains(req.GroupJID, "@g.us") {
+			http.Error(w, "Invalid group JID: must end with @g.us", http.StatusBadRequest)
+			return
+		}
+
+		// Check connection
+		if !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(LeaveGroupResponse{
+				Success: false,
+				Message: "Not connected to WhatsApp",
+			})
+			return
+		}
+
+		// Parse the group JID
+		groupJID, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(LeaveGroupResponse{
+				Success: false,
+				Message: fmt.Sprintf("Error parsing group JID: %v", err),
+			})
+			return
+		}
+
+		// Leave the group
+		err = client.LeaveGroup(context.Background(), groupJID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(LeaveGroupResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to leave group: %v", err),
+			})
+			return
+		}
+
+		fmt.Printf("Left group: %s\n", req.GroupJID)
+
+		// Send success response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(LeaveGroupResponse{
+			Success: true,
+			Message: fmt.Sprintf("Successfully left group: %s", req.GroupJID),
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -800,14 +883,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -973,7 +1056,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1071,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {

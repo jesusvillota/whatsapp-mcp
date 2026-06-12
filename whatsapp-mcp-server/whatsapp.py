@@ -724,6 +724,36 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
+def leave_group(group_jid: str) -> Tuple[bool, str]:
+    """Leave a WhatsApp group by its JID.
+    
+    Args:
+        group_jid: The group JID (e.g., "123456789@g.us")
+    
+    Returns:
+        A tuple of (success, message)
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/leave-group"
+        payload = {
+            "group_jid": group_jid
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        else:
+            return False, f"Error: HTTP {response.status_code} - {response.text}"
+            
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path.
     

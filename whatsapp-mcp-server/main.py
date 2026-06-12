@@ -12,7 +12,8 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    leave_group as whatsapp_leave_group
 )
 
 # Initialize FastMCP server
@@ -216,6 +217,22 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
         A dictionary containing success status and a status message
     """
     success, status_message = whatsapp_audio_voice_message(recipient, media_path)
+    return {
+        "success": success,
+        "message": status_message
+    }
+
+@mcp.tool()
+def leave_group(group_jid: str) -> Dict[str, Any]:
+    """Leave a WhatsApp group by its JID.
+    
+    Args:
+        group_jid: The group JID (e.g., "123456789@g.us")
+    
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, status_message = whatsapp_leave_group(group_jid)
     return {
         "success": success,
         "message": status_message
