@@ -13,7 +13,9 @@ from whatsapp import (
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
-    leave_group as whatsapp_leave_group
+    leave_group as whatsapp_leave_group,
+    get_sync_settings as whatsapp_get_sync_settings,
+    set_sync_settings as whatsapp_set_sync_settings
 )
 
 # Initialize FastMCP server
@@ -40,7 +42,8 @@ def list_messages(
     page: int = 0,
     include_context: bool = True,
     context_before: int = 1,
-    context_after: int = 1
+    context_after: int = 1,
+    include_groups: bool = False
 ) -> List[Dict[str, Any]]:
     """Get WhatsApp messages matching specified criteria with optional context.
     
@@ -55,6 +58,7 @@ def list_messages(
         include_context: Whether to include messages before and after matches (default True)
         context_before: Number of messages to include before each match (default 1)
         context_after: Number of messages to include after each match (default 1)
+        include_groups: Whether to include group messages in broad searches (default False)
     """
     messages = whatsapp_list_messages(
         after=after,
@@ -66,7 +70,8 @@ def list_messages(
         page=page,
         include_context=include_context,
         context_before=context_before,
-        context_after=context_after
+        context_after=context_after,
+        include_groups=include_groups
     )
     return messages
 
@@ -76,7 +81,8 @@ def list_chats(
     limit: int = 20,
     page: int = 0,
     include_last_message: bool = True,
-    sort_by: str = "last_active"
+    sort_by: str = "last_active",
+    include_groups: bool = False
 ) -> List[Dict[str, Any]]:
     """Get WhatsApp chats matching specified criteria.
     
@@ -86,13 +92,15 @@ def list_chats(
         page: Page number for pagination (default 0)
         include_last_message: Whether to include the last message in each chat (default True)
         sort_by: Field to sort results by, either "last_active" or "name" (default "last_active")
+        include_groups: Whether to include group chats (default False)
     """
     chats = whatsapp_list_chats(
         query=query,
         limit=limit,
         page=page,
         include_last_message=include_last_message,
-        sort_by=sort_by
+        sort_by=sort_by,
+        include_groups=include_groups
     )
     return chats
 
@@ -118,25 +126,27 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     return chat
 
 @mcp.tool()
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
+def get_contact_chats(jid: str, limit: int = 20, page: int = 0, include_groups: bool = False) -> List[Dict[str, Any]]:
     """Get all WhatsApp chats involving the contact.
     
     Args:
         jid: The contact's JID to search for
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
+        include_groups: Whether to include group chats (default False)
     """
-    chats = whatsapp_get_contact_chats(jid, limit, page)
+    chats = whatsapp_get_contact_chats(jid, limit, page, include_groups)
     return chats
 
 @mcp.tool()
-def get_last_interaction(jid: str) -> str:
+def get_last_interaction(jid: str, include_groups: bool = False) -> str:
     """Get most recent WhatsApp message involving the contact.
     
     Args:
         jid: The JID of the contact to search for
+        include_groups: Whether to include group chats (default False)
     """
-    message = whatsapp_get_last_interaction(jid)
+    message = whatsapp_get_last_interaction(jid, include_groups)
     return message
 
 @mcp.tool()
@@ -220,6 +230,40 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     return {
         "success": success,
         "message": status_message
+    }
+
+@mcp.tool()
+def get_sync_settings() -> Dict[str, Any]:
+    """Get WhatsApp bridge sync settings.
+
+    Returns:
+        A dictionary showing whether group message syncing is enabled
+    """
+    success, status_message, include_group_messages = whatsapp_get_sync_settings()
+    return {
+        "success": success,
+        "message": status_message,
+        "include_group_messages": include_group_messages
+    }
+
+@mcp.tool()
+def set_group_message_sync(include_group_messages: bool) -> Dict[str, Any]:
+    """Enable or disable syncing and fetching WhatsApp group messages.
+
+    Group message syncing is disabled by default. When disabled, new group
+    messages and group history sync conversations are not stored by the bridge.
+
+    Args:
+        include_group_messages: True to include group messages, False to exclude them
+
+    Returns:
+        A dictionary containing success status and the updated setting
+    """
+    success, status_message, current_include_group_messages = whatsapp_set_sync_settings(include_group_messages)
+    return {
+        "success": success,
+        "message": status_message,
+        "include_group_messages": current_include_group_messages
     }
 
 @mcp.tool()

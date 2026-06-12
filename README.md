@@ -119,6 +119,7 @@ This application consists of two main components:
 - All message history is stored in a SQLite database within the `whatsapp-bridge/store/` directory
 - The database maintains tables for chats and messages
 - Messages are indexed for efficient searching and retrieval
+- Group message syncing is disabled by default to avoid storing noisy group conversations. It can be enabled with the `set_group_message_sync` MCP tool.
 
 ## Usage
 
@@ -140,6 +141,17 @@ Claude can access the following tools to interact with WhatsApp:
 - **send_file**: Send a file (image, video, raw audio, document) to a specified recipient
 - **send_audio_message**: Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed)
 - **download_media**: Download media from a WhatsApp message and get the local file path
+- **leave_group**: Leave a WhatsApp group by group JID
+- **get_sync_settings**: Check whether group message syncing is enabled
+- **set_group_message_sync**: Enable or disable syncing and fetching WhatsApp group messages
+
+### Group Message Sync
+
+By default, the bridge does not store new group messages or group history sync conversations. This keeps the local message database focused on direct chats and avoids filling it with low-value group traffic.
+
+Use `get_sync_settings` to check the current setting and `set_group_message_sync(include_group_messages=True)` to opt in to group message syncing. Set it back to `False` to disable group syncing again.
+
+MCP reads such as `list_messages`, `list_chats`, `get_contact_chats`, and `get_last_interaction` exclude groups by default. Pass `include_groups=True` to include group chats/messages in those reads. Existing group messages already stored in the database are not deleted automatically.
 
 ### Media Handling Features
 

@@ -84,6 +84,11 @@ func NewMessageStore() (*MessageStore, error) {
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
+
+		CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
 	`)
 	if err != nil {
 		db.Close()
@@ -103,6 +108,38 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 	_, err := store.db.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
 		jid, name, lastMessageTime,
+	)
+	return err
+}
+
+func isGroupJID(jid string) bool {
+	return strings.HasSuffix(jid, "@g.us")
+}
+
+// GetIncludeGroupMessages returns whether group messages should be stored and synced.
+func (store *MessageStore) GetIncludeGroupMessages() (bool, error) {
+	var value string
+	err := store.db.QueryRow("SELECT value FROM settings WHERE key = ?", "include_group_messages").Scan(&value)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return value == "true", nil
+}
+
+// SetIncludeGroupMessages controls whether group messages should be stored and synced.
+func (store *MessageStore) SetIncludeGroupMessages(enabled bool) error {
+	value := "false"
+	if enabled {
+		value = "true"
+	}
+
+	_, err := store.db.Exec(
+		"INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+		"include_group_messages", value,
 	)
 	return err
 }
@@ -211,6 +248,18 @@ type LeaveGroupRequest struct {
 type LeaveGroupResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+}
+
+// SyncSettingsRequest represents the request body for updating sync settings.
+type SyncSettingsRequest struct {
+	IncludeGroupMessages *bool `json:"include_group_messages"`
+}
+
+// SyncSettingsResponse represents the current sync settings.
+type SyncSettingsResponse struct {
+	Success              bool   `json:"success"`
+	Message              string `json:"message,omitempty"`
+	IncludeGroupMessages bool   `json:"include_group_messages"`
 }
 
 // Function to send a WhatsApp message
@@ -424,6 +473,17 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// Save message to database
 	chatJID := msg.Info.Chat.String()
 	sender := msg.Info.Sender.User
+
+	if isGroupJID(chatJID) {
+		includeGroups, err := messageStore.GetIncludeGroupMessages()
+		if err != nil {
+			logger.Warnf("Failed to read group sync setting: %v", err)
+			return
+		}
+		if !includeGroups {
+			return
+		}
+	}
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
@@ -807,7 +867,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		// Ensure it's a group JID
-		if !strings.Contains(req.GroupJID, "@g.us") {
+		if !isGroupJID(req.GroupJID) {
 			http.Error(w, "Invalid group JID: must end with @g.us", http.StatusBadRequest)
 			return
 		}
@@ -855,6 +915,67 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Success: true,
 			Message: fmt.Sprintf("Successfully left group: %s", req.GroupJID),
 		})
+	})
+
+	// Handler for reading and updating sync settings
+	http.HandleFunc("/api/sync-settings", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.Method {
+		case http.MethodGet:
+			includeGroups, err := messageStore.GetIncludeGroupMessages()
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(SyncSettingsResponse{
+					Success: false,
+					Message: fmt.Sprintf("Failed to read sync settings: %v", err),
+				})
+				return
+			}
+
+			json.NewEncoder(w).Encode(SyncSettingsResponse{
+				Success:              true,
+				IncludeGroupMessages: includeGroups,
+			})
+
+		case http.MethodPost:
+			var req SyncSettingsRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(SyncSettingsResponse{
+					Success: false,
+					Message: "Invalid request format",
+				})
+				return
+			}
+
+			if req.IncludeGroupMessages == nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(SyncSettingsResponse{
+					Success: false,
+					Message: "include_group_messages is required",
+				})
+				return
+			}
+
+			if err := messageStore.SetIncludeGroupMessages(*req.IncludeGroupMessages); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(SyncSettingsResponse{
+					Success: false,
+					Message: fmt.Sprintf("Failed to update sync settings: %v", err),
+				})
+				return
+			}
+
+			json.NewEncoder(w).Encode(SyncSettingsResponse{
+				Success:              true,
+				Message:              "Sync settings updated",
+				IncludeGroupMessages: *req.IncludeGroupMessages,
+			})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	// Start the server
@@ -1100,6 +1221,17 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 		}
 
 		chatJID := *conversation.ID
+
+		if isGroupJID(chatJID) {
+			includeGroups, err := messageStore.GetIncludeGroupMessages()
+			if err != nil {
+				logger.Warnf("Failed to read group sync setting: %v", err)
+				continue
+			}
+			if !includeGroups {
+				continue
+			}
+		}
 
 		// Try to parse the JID
 		jid, err := types.ParseJID(chatJID)

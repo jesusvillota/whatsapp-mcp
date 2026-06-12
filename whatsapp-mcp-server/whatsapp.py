@@ -131,7 +131,8 @@ def list_messages(
     page: int = 0,
     include_context: bool = True,
     context_before: int = 1,
-    context_after: int = 1
+    context_after: int = 1,
+    include_groups: bool = False
 ) -> List[Message]:
     """Get messages matching the specified criteria with optional context."""
     try:
@@ -170,6 +171,9 @@ def list_messages(
         if chat_jid:
             where_clauses.append("messages.chat_jid = ?")
             params.append(chat_jid)
+        elif not include_groups:
+            where_clauses.append("chats.jid NOT LIKE ?")
+            params.append("%@g.us")
             
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
@@ -321,7 +325,8 @@ def list_chats(
     limit: int = 20,
     page: int = 0,
     include_last_message: bool = True,
-    sort_by: str = "last_active"
+    sort_by: str = "last_active",
+    include_groups: bool = False
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
     try:
@@ -352,6 +357,10 @@ def list_chats(
         if query:
             where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
             params.extend([f"%{query}%", f"%{query}%"])
+
+        if not include_groups:
+            where_clauses.append("chats.jid NOT LIKE ?")
+            params.append("%@g.us")
             
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -432,18 +441,25 @@ def search_contacts(query: str) -> List[Contact]:
             conn.close()
 
 
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
+def get_contact_chats(jid: str, limit: int = 20, page: int = 0, include_groups: bool = False) -> List[Chat]:
     """Get all chats involving the contact.
     
     Args:
         jid: The contact's JID to search for
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
+        include_groups: Whether to include group chats (default False)
     """
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
+        where_clauses = ["(m.sender = ? OR c.jid = ?)"]
+        params = [jid, jid]
+        if not include_groups:
+            where_clauses.append("c.jid NOT LIKE ?")
+            params.append("%@g.us")
+
         cursor.execute("""
             SELECT DISTINCT
                 c.jid,
@@ -454,10 +470,10 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
                 m.is_from_me as last_is_from_me
             FROM chats c
             JOIN messages m ON c.jid = m.chat_jid
-            WHERE m.sender = ? OR c.jid = ?
+            WHERE """ + " AND ".join(where_clauses) + """
             ORDER BY c.last_message_time DESC
             LIMIT ? OFFSET ?
-        """, (jid, jid, limit, page * limit))
+        """, tuple(params + [limit, page * limit]))
         
         chats = cursor.fetchall()
         
@@ -483,12 +499,18 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
             conn.close()
 
 
-def get_last_interaction(jid: str) -> str:
+def get_last_interaction(jid: str, include_groups: bool = False) -> str:
     """Get most recent message involving the contact."""
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
+        where_clauses = ["(m.sender = ? OR c.jid = ?)"]
+        params = [jid, jid]
+        if not include_groups:
+            where_clauses.append("c.jid NOT LIKE ?")
+            params.append("%@g.us")
+
         cursor.execute("""
             SELECT 
                 m.timestamp,
@@ -501,10 +523,10 @@ def get_last_interaction(jid: str) -> str:
                 m.media_type
             FROM messages m
             JOIN chats c ON m.chat_jid = c.jid
-            WHERE m.sender = ? OR c.jid = ?
+            WHERE """ + " AND ".join(where_clauses) + """
             ORDER BY m.timestamp DESC
             LIMIT 1
-        """, (jid, jid))
+        """, tuple(params))
         
         msg_data = cursor.fetchone()
         
@@ -723,6 +745,55 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+
+def get_sync_settings() -> Tuple[bool, str, Optional[bool]]:
+    """Get WhatsApp bridge sync settings."""
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/sync-settings"
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            result = response.json()
+            return (
+                result.get("success", False),
+                result.get("message", "Sync settings retrieved"),
+                result.get("include_group_messages")
+            )
+
+        return False, f"Error: HTTP {response.status_code} - {response.text}", None
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", None
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}", None
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", None
+
+def set_sync_settings(include_group_messages: bool) -> Tuple[bool, str, Optional[bool]]:
+    """Update WhatsApp bridge sync settings."""
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/sync-settings"
+        payload = {
+            "include_group_messages": include_group_messages
+        }
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return (
+                result.get("success", False),
+                result.get("message", "Sync settings updated"),
+                result.get("include_group_messages")
+            )
+
+        return False, f"Error: HTTP {response.status_code} - {response.text}", None
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", None
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}", None
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", None
 
 def leave_group(group_jid: str) -> Tuple[bool, str]:
     """Leave a WhatsApp group by its JID.
